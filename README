@@ -1,0 +1,94 @@
+Ευριπίδης Παντελαίος - 1115201600124
+
+
+Compiling source code:
+make
+
+Execution of the program:
+./travelMonitorClient –m numMonitors -b socketBufferSize -c cyclicBufferSize -s sizeOfBloom -i input_dir -t numThreads
+
+Για παράδειγμα εκτελούμε: ./travelMonitorClient -m 20 -b 1200 -c 30 -s 100000 -i input_dir -t 30
+
+Η σειρά των ορισμάτων για να τρέξει το πρόγραμμα μπορεί να δοθεί με οποιαδήποτε σειρά.
+
+Και τα δύο εκτελέσιμα αρχεία παράγονται από το Makefile με χρήση της εντολης make (η κανονικη εντολη ειναι: 'make all' αλλα εχω αλλαξει την default συμπεριφορα για να γινεται απλα με την εντολη 'make').
+
+
+
+
+> Περιγραφή του προγράμματος
+
+• Sockets: Για την ανταλλαγη πληροφοριων μεταξυ των processes χρησιμοποιειται ενα socket μεταξυ του travelMonitorClient και καθε monitorServer. Τον ρολο του server τον εχουν οι διεργασιες monitorServer που δημιουργονται απο την αρχικη διεργασια. Για αυτο τον λογο το parent process περιμενει στο connect() μεχρι να ειναι ετοιμα τα monitorServer να αποδεχθουν την συνδεση. Χρησιμοποιειται η εξωτερικη IP διευθυνση του server προκειμενου να επιτευχθει η συνδεση των δυο ακρων. 
+
+• Port numbers: Για τον αριθμο του port που θα χρησιμοποιηθει ειναι ενας τυχαιο αριθμος στο ευρος 49152 - 65534. Εχουν επιλεχθει υψηλα νουμερα για να μην υπαρχξουν conflicts με ports που χρησιμοποιουνται ηδη. Αφου επιλεχθει ο τυχαιος αριθμος καθε επομενο monitorServer process παιρνει τον αριθμο αυτον αυξανομενο κατα ενα καθε φορα.
+
+• Kυκλικο buffer: Ο κυκλικος buffer αναπαρισταται απο εναν διδιαστατο πινακα char ** και χρησιμοποειται ως εξης. Καθε side thread επιλεγει το πρωτο διαθεσιμο στοιχειο του πινακα εφοσον δεν ειναι αδειος. Το main thread γεμιζει τον πινακα εφοσον δεν ειναι γεματος και υπαρχουν ακομα στοιχεια για να βαλει. Για να γεμισει ο πινακας δεν χρειαζεται να εχει αδειασει πληρως.
+
+• Threads: Εχουμε το μοντελο ενος producer και πολλων consumers. Ουσιαστικα το main thread ειναι ο producer και τα δημιουργημενα threads αποτελουν τους consumers. Για τον συγχρονισμο μεταξυ των threads χρησιμοποιουνται 2 condition variables (cond_not_full και cond_not_empty) και 1 mutex για την προστασια της κοινης μνημης στον σωρο. 
+O producer θα περιμενει στο condition variable σε περιπτωση που το κυκλικο buffer ειναι γεματο μεχρι να του δοθει signal απο καποιο consumer thread για να ξαναελεγξει την συνθηκη. Αντιστοιχα, οι consumers θα περιμενουν στο condition variable σε περιπτωση που το κυκλικο buffer ειναι αδειο μεχρι να του ερθει καποιο σημα για να ελεγξει παλι την συνθηκη. Καθε consumer thread παιρνει το πρωτο διαθεσιμο αρχειο απο τον κυκλικο buffer και ενημερωνει τις δομες.
+Στο προγραμμα επιτυγχανεται η παραλληλια των threads χρησιμοποιωντας pthread_mutex_lock και pthread_mutex_unlock καθε φορα που δεν διαβαζονται ή γραφονται διαμοιραζομενα δεδομενα που υπαρχουν στο heap. Το mutex γινεται unlock ανεμεσα σε καθε μια σειρα (εγγραφη) απο το αρχειο που διαβαζεται και με αυτον τον τροπο ειναι εφικτο να παρει την σκυταλη καποιο αλλο thread για να διαβασει εκεινο μια εγγραφη απο το δικο του αρχειο.
+Το main thread (producer) αφου βαλει και το τελευταιο στοιχειο στο κυκλικο buffer, θα περιμενει (με την βοηθεια condition variable) μεχρι να διαβαστουν ολα τα αρχεια απο τον buffer και να ενημερωθουν οι αντιστοιχες δομες. Μολις διαβαστει, λοιπον, και το τελευταιο αρχειο πραγματοποιειται μια ειδικη συνθηκη και το main thread στελνει τα bloom filters στο travelMonitorClient, το οποιο περιμενει να διαβασει τα bloom filters.
+
+
+Για την επικοινωνια μεσω του socket χρησιμοποιειται ενα πρωτοκολλο επικοινωνιας ως εξης:
+Τα πρώτα 8 bytes που θα γραφτουν και θα διαβαστουν αντιστοιχα οριζουν 2 ακεραιους sizeof(int). Ο πρωτος ακεραιος δηλωνει εναν ειδικο αριθμο (special code) που δηλωνει τι ακριβως ειναι τα bytes που προκειται να γραφτουν, δηλαδη ποια ενεργεια θα πρεπει να κανει ο παραληπτης. Ο δευτερος ακεραιος δηλωνει τον αριθμο των bytes που πρεπει να διαβασει ο παραληπτης. Επειτα απο τους 2 ακεραιους αριθμους στελνονται τα πραγματικα bytes του μηνυματος. Τα bytes του μηνυματος σπανε σε κομματια μεγεθους 'bufferSize', συνεπως καθε φορα διαβαζονται bytes μεγεθους 'bufferSize' και μονο για παραδειγμα στο τελευταιο μηνυμα ισως χρειαστει να διαβαστουν λιγοτερα bytes απο 'bufferSize'.
+Για τις πρωτες πληροφοριες που το parent process στελνει στα child processes (οπως αποστολη buffer_size, bloom_size) το special code παιρνει την τιμη 1 ως default, καθως η ενεργεια που πρεπει να κανει ο παραληπτης ειναι τετριμμενη, καθως γνωριζει τι πρεπει να κανει. Για τις πληροφοριες που στελνει πισω το child στο parent process οπως τους ιους και τα bloom filters που διαχειριζεται το special code παιρνει την τιμη 2. 
+Το parent process γνωριζει οτι το παιδι ειναι ετοιμο να εξυπηρετησει αιτηματα οταν το παιδι αποστειλει την ειδικη συμβολοσειρα "*I am ready to serve requests*".
+
+
+Special Codes for the communication between parent and child process through the sockets
+
+    1: Parent process sends basic info like socket_buffer_size, bloom_size and the paths of directories (countries) it will manage each child process.
+    2: Child processs sends the viruses and bloom filters which it manages to parent process.
+    3: For /travelRequest parent process send 'citizenID', 'virus_name' and 'country' to each child process 
+       to give vaccination info for 'citizenID' in case it manages 'citizenID' itself.
+    4: For /travelRequest child process sends 'YES' for the current citizenID.
+    5: For /travelRequestTo child process sends 'NO' for the current citizenID.
+    6: For /searchVaccinationStatus parent process send requests to all monitor processes to serve the request.
+    7: For /searchVaccinationStatus monitor process send the info for the citizen.
+    8: For /searchVaccinationStatus monitor process send the requests (vaccinations info) for the citizenID.
+    9: For /searchVaccinationStatus monitor process send a terminated message when all vaccinations info have been sent.
+    10: For /addVaccinationRecords parent process notifies the appropriate child process that new files have been added.
+    11: For /addVaccinationRecords child process sends the (new) number of viruses to parent process.
+    12: For /addVaccinationRecords child process sends the (new) viruses to parent process.
+    13: For /addVaccinationRecords child process sends the updated bloom filters to parent process.
+    13: For /exit parent process send message to terminate each process
+
+
+
+• Στην εντολη /travelRequest αν το αιτημα περασει τον αρχικο ελεγχο απο το parent process και σταλθει στο monitor process που διαχειριζεται την χωρα 'countryFrom' θα ελεγθει αν η χωρα 'countryFrom' ειναι πραγματι η χωρα του συγκεκριμενου πολιτη.
+Αυτο το αναφερω, καθως υπηρχε μια συγχυση ως προ αυτο. Για παραδειγμα αν σκεφτουμε οτι ενα process monitor μπορει να διαχειριζεται πολλες χωρες θα μπορουσε να ληφθει λανθασμενη απαντηση καθως για τις χωρες που ανηκουν στο ιδιο monitor process χρησιμοποιω για κοινους ιους το ιδιο skip list και bloom filter.
+Σε περιπτωση που η χωρα για τον πολιτη δεν ειναι η σωστη τοτε το αιτημα θα απορριφθει απο το monitor process και θα δοθει αρνητικη απαντηση για εμβολιασμο στο output.
+
+
+• Στην εντολη /travelRequest για τον υπολογισμό των 6 μηνων απο τοτε που εγινε ο εμβολιασμος μεχρι την ημερομηνια του ταξιδιου υπολογιζεται οτι καθε μηνας εχει 30 μερες, οποτε υπολογιζεται οτι εχουν περασει λιγοτερες απο 180 μερες. Επισης, η παραμετρος countryTo θεωρουμε οτι μπορει να ειναι οποιαδηποτε χωρα ακομα και να μην ανηκει σε καποια απο τις υπαρχουσες χωρες.
+
+
+• Στην εντολη /travelStats υπολογιζονται οι αιτησεις που εγιναν στην εντολη /travelRequest. Κραταω σε μια ξεχωριστη λιστα τα στοιχεια καθε αιτησης. Πιο συγκεκριμενα κραταω το ονομα του ιου, την χωρα προορισμου (countryTo), την ημερομηνια του ταξιδιου και αν το αιτημα εγινε δεκτο ή απορριφθηκε. Οποτε αυτο που κανω ειναι να διασχιζω την λιστα και μετραω τους κομβους που πληρουν τα κριτηρια της εντολης για να εκτυπωθουν τα στατιστικα στο output.
+
+
+• Σχετικα με την εντολη /addVaccinationRecords θα πρεπει το αρχειο ή τα αρχεια που θα προσθεθουν στο directory να εχουν unique citizenID σε σχεση με τα αρχεια που ηδη υπαρχουν για να δινονται σωστες απαντησεις στα αιτηματα για ταξιδια των πολιτων και στις υπολοιπες εντολες χρηστη.
+
+
+• Στην εντολη απο τον χρηστη /searchVaccinationStatus χρησιμοποιω την εντολη select() για να ελεγχει το parent process ποιο απο ολα τα child εχει γραψει στο αντιστοιχο socket για να διαβασει ο πατερας τα στοιχεια του πολιτη και τις πληροφοριες για τους εμβολιασμους που εχει ή δεν εχει κανει και υπαρχουν καταχωρημενες στις δομες δεδομενων.
+
+
+• Προαιρετικη εξτρα λειτουργια: Στην ατερμονη λουπα που το προγραμμα περιμενει εισοδο απο τον χρηστη για τις εντολες (/travelRequest, /travelStats, /addVaccinationRecords κλπ) τυπωνω σε ενα αρχειο με ονομα "Monitor_info" με την συναρτηση 'print_monitors_info()' μερικες πληροφοριες για το καθε monitor process οπως το pid και τις χωρες που διαχειριζεται. Αυτο βοηθαει στον ελεγχο της ορθοτητας του προγραμματος οταν τερματιζει ενα child process και δημιουργειται νεο στην θεση του, προκειμενου να ελεγξουμε οτι πραγματι αλλαξε το pid και οτι οι χωρες που διαχειριζεται ειναι σωστες. Αυτο αποτελει εξτρα λειτουργια που δεν αναφερεται στην ασκηση. Αποφασισα να κρατησω το συγκεκριμενο κομματι κωδικα, καθως βοηθαει στο debugging και στην ορθοτητα των πληροφοριων που κρατανε τα processes.
+
+
+
+
+
+
+> Σχόλια - Παρατηρήσεις
+
+• Τα ορίσματα των εντολών που πληκτρολογεί ο χρήστης, αφού ολοκληρωθεί η εισαγωγή των εγγραφών στις δομές, πρέπει να είναι με την αντίστοιχη σειρά που δίνονται από την εκφώνηση για να θεωρηθεί έγκυρη η εντολή.
+
+• Κατά την εισαγωγή των εγγραφών στις δομές των monitorServer processes ελέγχω τα ορίσματα που διαβάστηκαν αν είναι έγκυρα. Σύμφωνα με την εκφώνηση ελέγχω τα παρακάτω:
+Πιο συγκεκριμένα, ελέγχω αριθμό ορισμάτων, οι συμβολοσειρές να αποτελούνται μόνο από γράμματα και να μην περιέχουν αριθμούς και ειδικά σύμβολα. Αντίστοιχα, οι αριθμοί να περιέχουν μόνο αριθμητικά ψηφία και όχι γράμματα ή σύμβολα. Το όρισμα 'virusName' μπορεί να αποτελείται απο γράμματα, αριθμούς και μέχρι μία παύλα.
+
+• Σε κάθε αρχείο υπάρχουν τα απαραίτητα επεξηγηματικά σχόλια στα σημεία που έχει κριθεί απαραίτητο, τα οποία διευκολύνουν την ανάγνωση και κατανόηση του κώδικα.
+
+• Έγινε μεταγλώττιση και εκτέλεση του προγράμματος σε διάφορα μηχανήματα linux της σχολής (όπως linux03, linux10, linux19, linux28).di.uoa.gr, καθώς και επιπλέον δοκιμές λαμβάνοντας υπ’όψιν να λειτουργεί σωστά το πρόγραμμα για κάθε δυνατή περίπτωση στο πλαίσιο της εργασίας.
+
+• Με την βοήθεια του προγραμματιστικού εργαλείου Valgrind έχει ελεγχθεί ότι δεν υπάρχουν errors και memory leaks, όλος ο χώρος αποδεσμεύεται κανονικά.
